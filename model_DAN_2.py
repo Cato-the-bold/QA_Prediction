@@ -12,7 +12,7 @@ import datas
 
 PRE_TRAINED = False
 DEBUG_MODE = False
-VOCABULARY_SIZE = 10000
+VOCABULARY_SIZE = 15000
 GLOVE_SIZE = 300
 EMBEDDING_SIZE = GLOVE_SIZE
 
@@ -40,8 +40,7 @@ def DAN_encoder_v2(input, lengths, dropout=False):
     input.set_shape((None,EMBEDDING_SIZE))
 
     my_dense_layer = partial(
-            tf.layers.dense, activation=tf.nn.relu,
-            kernel_regularizer=tf.contrib.layers.l1_regularizer(0.001))
+            tf.layers.dense, activation=tf.nn.relu)
 
     for i in xrange(3):
         input = my_dense_layer(input, 500)
@@ -66,17 +65,23 @@ def model_predication_op(encoder):
         responses_embeddings = DAN_encoder_v2(responses, responses_lens)
         responses_embeddings2 = tf.layers.dense(responses_embeddings, EMBEDDING_SIZE, name="FC_responses")
 
+    input_embeddings = tf.nn.l2_normalize(input_embeddings, 1)
+    responses_embeddings2 = tf.nn.l2_normalize(responses_embeddings2, 1)
     matrix = tf.matmul(input_embeddings, responses_embeddings2,transpose_b=True)
-    return tf.nn.softmax(logits=matrix)
+    matrix = tf.negative(tf.negative(matrix))
+    # matrix = tf.subtract(1, tf.negative(matrix))
+    # return tf.nn.softmax(logits=matrix)
+    return matrix
 
 def model_train_op(predication):
     diag_loss = tf.diag_part(predication)
     loss = tf.reduce_mean(diag_loss, name="paired_loss")  # not shown
+
     reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
     if reg_losses:
         loss = tf.add_n([loss] + reg_losses, name="loss")
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.001)
     training_op = optimizer.minimize(loss,global_step=tf.train.get_or_create_global_step())
 
     return loss, training_op
@@ -125,7 +130,6 @@ def train(n_epochs, config, predict):
 
     pred = model_predication_op(encoder)
     loss, training_op = model_train_op(pred)
-    # global_step = tf.Variable(0, dtype=tf.int32, trainable=False, name='global_step')
     testing_op = pair_accuracy_op(pred)
     testing_op_top5 = pair_top_k_accuracy_op(pred, 5)
     testing_op_top10 = pair_top_k_accuracy_op(pred, 10)
@@ -149,14 +153,18 @@ def train(n_epochs, config, predict):
             train_writer = tf.summary.FileWriter('./logs/train', sess.graph)
 
             for epoch in xrange(n_epochs):
+                print("Epoch {}".format(epoch))
                 for i in xrange(len(train_questions)//K):
                     questions_batch, answers_batch = datas.get_sentence_batch(K, train_questions, train_answers)
                     questions_batch, q_lens = datas.pad_batch(questions_batch)
                     answers_batch, a_lens = datas.pad_batch(answers_batch)
 
-                    sess.run(training_op, feed_dict={inputs: questions_batch, responses: answers_batch, inputs_lens: q_lens, responses_lens: a_lens})
+                    _, loss_value = sess.run([training_op, loss], feed_dict={inputs: questions_batch, responses: answers_batch, inputs_lens: q_lens, responses_lens: a_lens})
+
+                    # print("    Loss: {0:>.4f}".format(loss_value))
+
                 if (i + 1) % 50 == 0:
-                    chkpoint_saver.save(sess, '.logs/train/qa_model', tf.train.get_global_step().eval())
+                    chkpoint_saver.save(sess, './logs/train/qa_model', tf.train.get_global_step().eval())
 
             accus_test, accus_test1, accus_test2 = [],[],[]
             for i in xrange(len(test_questions)//K):
@@ -207,9 +215,9 @@ def train(n_epochs, config, predict):
                 questions_batch, q_lens = datas.pad_batch(questions_batch)
                 answers_batch, a_lens = datas.pad_batch(answers_batch)
 
-                acc_test = sess.run(testing_op_top5,feed_dict={Inputs: questions_batch, Responses: answers_batch, Inputs_lens: q_lens, Responses_lens: a_lens})
+                acc_test = sess.run(testing_op,feed_dict={Inputs: questions_batch, Responses: answers_batch, Inputs_lens: q_lens, Responses_lens: a_lens})
                 accus_test.append(acc_test)
-            print("[Evaluate] Top-5 accuracy:", sum(accus_test)/len(accus_test))
+            print("[Evaluate] Top-1 accuracy:", sum(accus_test)/len(accus_test))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

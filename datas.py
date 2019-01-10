@@ -15,20 +15,19 @@ import fnmatch
 import numpy as np
 import tensorflow as tf
 from keras.preprocessing.text import Tokenizer
-# import spacy
-# nlp = spacy.load("en", disable=['parser', 'tagger', 'ner'])
+import pandas as pd
 
-dump_file = 'data.dump'
+dump_file = 'data'
 
 def parse_gzip(path):
   g = gzip.open(path, 'rb')
   for l in g:
     yield eval(l)
 
-def get_content(path, category):
+def get_content(path):
     res = []
     for row in parse_gzip(path):
-        res.append([row['question'], row['answer']])
+        res.append([row['asin'], row['question'], row['answer']])
     return res
 
 # load data from json files.
@@ -39,28 +38,25 @@ def preprocess_datasets(dir, file_filter, num_words, max_len):
         data.extend(get_content(os.path.join(dir,f)))
     random.shuffle(data)
 
+    frame = pd.DataFrame(data, columns=['asin', 'question', 'answer'])
+
     tokenizer = Tokenizer(num_words)
-    questions,answers = list(zip(*data))
-    tokenizer.fit_on_texts(questions+answers)
-    X = tokenizer.texts_to_sequences(questions)
-    Y = tokenizer.texts_to_sequences(answers)
+    tokenizer.fit_on_texts(frame['question']+frame['answer'])
+    frame['question'] = tokenizer.texts_to_sequences(frame['question'])
+    frame['answer'] = tokenizer.texts_to_sequences(frame['answer'])
 
     #if X[i] or Y[i] is None, remove the pair.
-    X,Y,_ = zip(*list((x,y) for x,y in zip(X,Y) if 0<len(x)<=max_len and 0<len(y)<=max_len))
-    X = list(X)
-    Y = list(Y)
+    frame = frame[
+        frame['question'].apply(lambda x:len(x) <= max_len) &
+        frame['answer'].apply(lambda x: len(x) <= max_len)
+    ]
 
-    ouf = open(dump_file, 'wb')
-    cPickle.dump(X,ouf)
-    cPickle.dump(Y,ouf)
+    frame.to_pickle(dump_file+".data")
+    ouf = open(dump_file+".w2idx", 'wb')
     cPickle.dump({k:v for k,v in tokenizer.word_index.items() if v<=num_words},ouf)
     ouf.close()
 
-    #statistics:
-    # print collections.Counter([len(r) for r in X])[0]
-    # print collections.Counter([len(r) for r in Y])[0]
-
-    return X, Y, tokenizer.word_index
+    return frame['question'].values, frame['answer'].values, tokenizer.word_index
 
 def pad_batch(matrix):
     # print matrix
@@ -71,15 +67,15 @@ def pad_batch(matrix):
     return matrix, lengths
 
 def load_dataset(dir,file_filter,num_words,max_len=500):
-    if not os.path.isfile(os.path.join(dump_file)):
+    if not os.path.isfile(os.path.join(dump_file+".data")):
         return preprocess_datasets(dir,file_filter,num_words,max_len)
     else:
-        inf = open(dump_file)
-        X = cPickle.load(inf)
-        Y = cPickle.load(inf)
+        frame = pd.read_pickle(dump_file+".data")
+
+        inf = open(dump_file+".w2idx")
         word2index = cPickle.load(inf)
         inf.close()
-        return X,Y,word2index
+        return frame['question'].values, frame['answer'].values, word2index
 
 def get_sentence_batch(K, questions, answers):
     indices = np.random.choice(len(questions),K).tolist()
